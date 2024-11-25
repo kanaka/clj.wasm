@@ -19,4 +19,5 @@ to make sure that Wasm works well for languages like Clojure.
 * [Links](./links.md) (guides, standards, projects, languages, etc)
 * [Code Experiments](./experiments/)
 * [Project Chronology / History](./chronology.md)
+* [Tentative Plan of Attack](./plan.md)
 
