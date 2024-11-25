@@ -14,4 +14,9 @@ I (Joel Martin) would personally love to see full/first class support for wasm (
 
 * 2024-11-25
 
-Create https://github.com/kanaka/clj.wasm repo
+Create https://github.com/kanaka/clj.wasm repo.
+
+Includes two WAT experiments:
+* Trivial add example
+* Strings example that uses linear memory for I/O and handles strings
+  internall using GC'd character arrays.
