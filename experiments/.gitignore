@@ -3,3 +3,5 @@
 /.npm
 /.*history
 /node_modules
+/.clojure/
+/.deps.clj/
