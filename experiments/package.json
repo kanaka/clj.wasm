@@ -1,0 +1,7 @@
+{
+  "type": "module",
+  "dependencies": {
+    "koffi": "^2.9.2",
+    "source-map-support": "^0.5.21"
+  }
+}
