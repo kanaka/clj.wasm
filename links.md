@@ -42,14 +42,14 @@
   * part 7 - Text Format:
     https://coinexsmartchain.medium.com/wasm-introduction-part-7-text-format-2d608e50daab
 
-## Standardization:
+## Standardization Status:
 
 * Features/standards support across browsers and engines:
   https://webassembly.org/features/
 * proposal status/phase listing:
   https://github.com/WebAssembly/proposals
 
-## Standards:
+## Standards / Specs:
 
 * Garbage collection (WasmGC):
   https://github.com/WebAssembly/gc/blob/main/proposals/gc/Overview.md
@@ -77,6 +77,8 @@
   https://github.com/WebAssembly/js-string-builtins/blob/main/proposals/js-string-builtins/Overview.md
 * Multiple memories:
   https://github.com/WebAssembly/multi-memory/blob/master/proposals/multi-memory/Overview.md
+* Tail calls:
+  https://github.com/WebAssembly/tail-call/blob/master/proposals/tail-call/Overview.md
 * Import/export mutable globals:
   https://github.com/WebAssembly/mutable-global/blob/master/proposals/mutable-global/Overview.md
 * WebAssembly System Interface:
