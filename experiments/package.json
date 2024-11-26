@@ -2,6 +2,8 @@
   "type": "module",
   "dependencies": {
     "koffi": "^2.9.2",
-    "source-map-support": "^0.5.21"
+    "source-map-support": "^0.5.21",
+    "nbb": "^1.2.179",
+    "unified-latex": "^1.3.1"
   }
 }

@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "nbb": "^1.2.179",
+    "unified-latex": "^1.1.3"
+  }
+}
