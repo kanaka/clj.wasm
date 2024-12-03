@@ -28,7 +28,7 @@
             [(seq before) (seq (take n xs)) (seq (drop n xs))]))))))
 
 (defn production-name? [[[t c] & xs]]
-  (and (= t "macro") (= c "production")))
+  (and (= t "macro") (= c "production") 2))
 
 #_(defn production-symbol? [[[t1 c1] [t2 c2] & xs]]
   ;; ["macro" "Tinstr"] ["string" "_I"] ["whitespace" nil] ["string" "&"]
@@ -106,11 +106,24 @@
          nodes ast]
     (if (empty? nodes)
       productions
-      (let [[_      [pname1] nodes1] (split-match-n production-name? nodes)
-            [pnodes [pname2] nodes2] (split-match-n production-name? nodes1)
+      (let [[_      [_ pname1] nodes1] (split-match-n production-name? nodes)
+            [pnodes [_ pname2] nodes2] (split-match-n production-name? nodes1)
             prod (parse-production pnodes)]
         (recur (conj productions (assoc prod :name pname1))
                (if pname2 (concat [pname2] nodes2) []))))))
+
+(declare emit-nodes)
+
+(defn split-productions [ast]
+  (loop [productions []
+         nodes ast]
+    (if (empty? nodes)
+      productions
+      (let [[_      [m1 p1] nodes1] (split-match-n production-name? nodes)
+            [pnodes [m2 p2] nodes2] (split-match-n production-name? nodes1)
+            pname1 (emit-nodes [p1] true)]
+        (recur (conj productions [pname1 pnodes])
+               (if p2 (concat [m2 p2] nodes2) []))))))
 
 ;;
 ;; emitter
@@ -290,7 +303,7 @@
                 cont (if (> (count nodes) 10) "..." "")]
             (throw (js/Error. (str "unmatched nodes: \n" unmatched cont)))))))))
 
-(defn emit-production [{:keys [name symbol rules]}]
+(defn emit-production [symbol rules]
   (let [pname (subs (second symbol) 1) ;; TODO:
         plen (count pname)
         rule-delim (str "\n" (apply str (repeat plen " ")) " |   ")]
@@ -330,34 +343,21 @@
          (map second)
          (map clean-math-text))))
 
-(defn process-file [filepath verbose?]
-  (println "Processing:" filepath)
-  (let [content (fs/readFileSync filepath "utf-8")
-        math-blocks (extract-math-blocks content)
-        ast-parser (-> (unified.)
-                       (.use unifiedLatexFromStringMinimal #js {:mode "math"}))
-        productions (for [block math-blocks])]
-    (doseq [block math-blocks]
-      (when verbose?
-        (println "=== Math Block ===")
-        (println "Raw content:")
-        (println block))
-      (let [result (parse-latex ast-parser block)]
-        (if (:success result)
-          ;; Remove :position (:source, :start, :end)
-          (let [full-ast (get-in result [:ast :content 0 :content])
-                ast (walk/postwalk #(if (map? %) [(:type %) (:content %)] %)
-                                        full-ast)
-;;                _ (prn) _ (prn :ast) _ (pprint ast)
-                productions (parse-productions ast)]
-            (doseq [production productions
-                    :when (seq (:rules production))]
-;;              (prn) (prn :production) (pprint production)
-              (when verbose? (println "\nEBNF Production:"))
-              (println (emit-production production))))
-          (do
-            (println "Parsing failed:")
-            (println (:error result))))))))
+(defn load-files [files verbose?]
+  (let [ast-parser (-> (unified.)
+                       (.use unifiedLatexFromStringMinimal #js {:mode "math"}))]
+    (for [file files
+          :let [_ (when verbose?
+                    (println "Processing:" file))
+                content (fs/readFileSync file "utf-8")]
+          block (extract-math-blocks content)
+          :let [full-ast (parse-latex ast-parser block)
+                ast (walk/postwalk
+                      #(if (map? %) [(:type %) (:content %)] %)
+                      (get-in full-ast [:ast :content 0 :content]))]
+          [name ast] (split-productions ast)]
+      {:file file :block block
+       :name name :ast ast})))
 
 (defn list-rst-files [dir]
   (let [files (.readdirSync fs dir)]
@@ -367,12 +367,44 @@
 
 
 (defn -main [& args]
-  (let [dir (or (first *command-line-args*) ".")]
-    (doseq [file (list-rst-files dir)
-            :when (re-seq #"instructions\.rst" file)]
-            ;;:when (re-seq #"values\.rst" file)]
-      (process-file file true))))
-
+  (let [dir (or (first *command-line-args*) ".")
+        verbose? true
+        files (->> (list-rst-files dir)
+                   ;;(filter #(re-seq #"instructions\.rst" %)))
+                   (filter #(re-seq #"types\.rst" %)))
+        raw-productions (load-files files verbose?)
+        productions (reduce
+                      (fn [ps {:keys [file block name ast] :as p}]
+                        (try
+                          (let [{:keys [symbol rules]} (parse-production ast)
+                                ebnf (emit-production symbol rules)]
+                            ;; TODO: if name already exists
+                            (conj ps [name (merge p {:symbol symbol
+                                                     :ast ast
+                                                     :ebnf ebnf})]))
+                          (catch :default e
+                            (conj ps [name (merge p {:error e})]))))
+                      [] raw-productions)]
+    (println "\nEBNF Productions:")
+    (doseq [[name {:keys [file block error symbol ast ebnf]}] productions]
+      (if error
+        (do
+          (println "\n\n===== Error =====")
+          (println "== Location ==")
+          (println (str "file: " file ", production name: " name))
+          (when verbose?
+            (println "== Raw Math Block ==")
+            (println block)
+            (println "== Production AST ==")
+            (println ast))
+          (println "== Error Message ==")
+          (println error)
+          (js/process.exit 1))
+        (do
+          (println (str "(* " file ":"
+                        " production name: " name
+                        ", symbol: " symbol " *)"))
+          (println ebnf))))))
 
 (-main)
 
