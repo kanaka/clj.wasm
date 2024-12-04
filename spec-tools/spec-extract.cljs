@@ -185,9 +185,7 @@
       (if (empty? nodes)
         result
         (let [[[t1 c1 :as n1] [t2 c2 :as n2] [t3 c3 :as n3] [t4 c4 :as n4]
-               [t5 c5 :as n5] [t6 c6 :as n6] [t7 c7 :as n7] [t8 c8 :as n8]] nodes
-              f2 (flatten-nodes (take 2 nodes))
-              s2 (stringify-nodes (take 2 nodes))]
+               [t5 c5 :as n5] [t6 c6 :as n6] [t7 c7 :as n7] [t8 c8 :as n8]] nodes]
           (cond
             ;; Text literals
             ;; ["macro" "text"] ["group" [["string" "br"] ["macro" "_"] ["string" "if"]]]
@@ -386,7 +384,7 @@
             (recur (str result " ") (drop 1 nodes))
 
 
-            ;; drop junk
+            ;; misc
             (= ["macro" "dots"] n1)
             (recur (str result " <DOTS> ") (drop 1 nodes))
 
@@ -406,11 +404,10 @@
 
 (defn emit-production
   "Emit EBNF string for one production"
-  [symbol rules opts]
-  (let [pname (subs (second symbol) 1) ;; TODO:
-        plen (count pname)
+  [{:keys [symbol rules]} opts]
+  (let [plen (count symbol)
         rule-delim (str "\n" (apply str (repeat plen " ")) " |   ")]
-    (str pname " ::= "
+    (str symbol " ::= "
          (S/join rule-delim
                  (for [{:keys [rule metadata]} rules]
                    (str (emit-nodes rule (assoc opts :meta? false))
@@ -485,7 +482,7 @@
          (map second)
          (map clean-math-text))))
 
-(defn load-files
+(defn parse-files
   "Load RST spec files, parse latex from math sections, split the
   production nodes into rules."
   [files {:as opts :keys [verbose? debug?]}]
@@ -503,11 +500,14 @@
                 ast (prune-latex (get-in full-ast [:ast :content 0 :content]))]
           :when (and (find-match-n production-name? ast)
                      (not (find-match-n equiv? ast)))
-          [name-node ast] (split-productions ast)]
+          [name-node ast] (split-productions ast)
+          :let [{:keys [symbol rules]} (parse-production ast)]]
       {:file file
        :block block
        :name (emit-nodes [name-node] (assoc opts :raw? true))
-       :ast ast})))
+       :symbol (emit-nodes [symbol] (assoc opts :meta? true))
+       :ast ast
+       :rules rules})))
 
 (defn -main
   "Load the spec RST files, parse them, and emit EBNF grammars."
@@ -518,16 +518,9 @@
               :show-comments? true
               :show-meta-comments? false
               }
-        raw-productions (load-files files opts)
-        all-productions (reduce
-                          (fn [ps {:keys [file block name ast] :as p}]
-                            (let [{:keys [symbol rules]} (parse-production ast)
-                                  sname (emit-nodes [symbol] (assoc opts :meta? true))
-                                  ebnf (emit-production symbol rules opts)]
-                              (conj ps (merge p {:symbol sname
-                                                 :ast ast
-                                                 :ebnf ebnf}))))
-                          [] raw-productions)
+        raw-productions (parse-files files opts)
+        all-productions (for [p raw-productions]
+                          (assoc p :ebnf (emit-production p opts)))
         file-productions (group-by :file all-productions)]
     ;; TODO: merge repeated production names
     (println "\nEBNF Productions:")
