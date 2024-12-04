@@ -30,10 +30,18 @@
             [(seq before) (seq (take n xs)) (seq (drop n xs))]))))))
 
 (defn find-match-n
+  "Like split-match-n but returns true or false instead of a count"
   [pred coll]
   (boolean (second (split-match-n pred coll))))
 
+(defn strs=
+  "Match a sequence of string nodes to strings in strs"
+  [nodes & strs]
+  (let [nodes (take (count strs) nodes)]
+    (and (every? #(= "string" %) (map first nodes))
+         (= strs (map second nodes)))))
 
+;; Some predicates for split-match-n
 (defn production-name? [[[t c] & xs]]
   (and (= t "macro") (= c "production") 2))
 
@@ -48,11 +56,6 @@
 
 (defn equiv? [[[t c] & xs]]
   (and (= t "macro") (= c "equiv")))
-
-(defn strs= [nodes & strs]
-  (let [nodes (take (count strs) nodes)]
-    (and (every? #(= "string" %) (map first nodes))
-         (= strs (map second nodes)))))
 
 (defn production-op? [xs]
   (cond
@@ -78,37 +81,51 @@
     (= [n1 n2] [["string" "("] ["macro" "iff"]]) 2
     :else 0))
 
-(defn newline? [[[t c] & xs]]
-  (and (= t "macro") (= c "\\")))
-
-(defn find-rule [nodes]
+;; rule and production parsing
+(defn parse-rule
+  "Parse one rule (and metadata if it has it).
+  Returns:
+  [{:rule rule :metadata metadata} remaining-nodes]"
+  [nodes]
   (let [[rule-full alt post] (split-match-n production-alt? nodes)
         [rule _ right] (split-match-n right-arrow? rule-full)]
     [{:rule rule
       :metadata right} post]))
 
-(defn find-rules [nodes]
+(defn parse-rules
+  "Parse the rules of a productions.
+  Returns:
+  [{:rule rule :metadata metadata} ...]"
+  [nodes]
   (loop [rules []
          nodes nodes]
     (if (empty? nodes)
       rules
-      (let [[rule nodes] (find-rule nodes)]
+      (let [[rule nodes] (parse-rule nodes)]
         (recur (conj rules rule) nodes)))))
 
 
-(defn parse-production [nodes]
+(defn parse-production
+  "Parse one grammar production symbol and rules.
+  Returns:
+  {:symbol production-symbol :rules rules}"
+  [nodes]
   (try
     (let [[_ [psym] nodes] (split-match-n production-symbol? nodes)
           [_ _ nodes] (split-match-n production-op? nodes)
-          rules (find-rules nodes)]
+          rules (parse-rules nodes)]
       {:symbol psym
        :rules rules})
     (catch :default e
       {:error (.-message e)})))
 
-(defn split-productions [ast]
+(defn split-productions
+  "Split sequence of nodes into all its productions.
+  Returns:
+  [[production-name unparse-nodes] ...]"
+  [nodes]
   (loop [productions []
-         nodes ast]
+         nodes nodes]
     (if (empty? nodes)
       productions
       (let [[_      [m1 p1] nodes1] (split-match-n production-name? nodes)
@@ -120,21 +137,24 @@
 ;; emitter
 ;;
 
-(defn flatten-groups [x]
-  (if (= (first x) "group")
-    (mapcat flatten-groups (second x))
-    [(second x)]))
-
-(defn flatten-nodes [xs]
-  (loop [result [], xs xs]
-    (if (empty? xs)
+(defn flatten-nodes
+  "Return a sequence of simple nodes with group nodes
+  hoisted/flattened"
+  [nodes]
+  (loop [result [], nodes nodes]
+    (if (empty? nodes)
       result
-      (let [[[t1 c1 :as x] & xs] xs]
+      (let [[[t1 c1 :as n1] & nodes] nodes]
         (if (= "group" t1)
-          (recur result (concat c1 xs))
-          (recur (conj result x) xs))))))
+          (recur result (concat c1 nodes))
+          (recur (conj result n1) nodes))))))
 
-(defn stringify-nodes [nodes raw?]
+(defn stringify-nodes
+  "Return a plain string representation of a sequence of nodes.
+  Unknown node types become 'UNKNOWN_TYPE<type>'. Unknown macros
+  become 'UNKNOWN_MACRO<content>' unless raw? is set, in which case
+  use plain content for unrecognized macro values."
+  [nodes raw?]
   (let [xs (flatten-nodes nodes)
         ss (for [[t1 c1 :as x] xs]
              (condp = t1
@@ -155,7 +175,10 @@
     (S/join "" ss)))
 
 
-(defn emit-nodes [orig-nodes {:keys [auto-whitespace? raw?] :as opts}]
+(defn emit-nodes
+  "Take a sequence of parsed/pruned production rule nodes and emit the
+  EBNF string equivalent"
+  [orig-nodes {:keys [auto-whitespace? raw?] :as opts}]
   (let [ws (if auto-whitespace? " " " ' '* ")]
     (loop [result ""
            nodes orig-nodes]
@@ -375,14 +398,15 @@
             (recur result (drop 4 nodes))
 
 
-
             :else
             (let [unmatched (take 10 nodes)
                   cont (if (> (count nodes) 10) "..." "")]
               (throw (js/Error. (str "unmatched nodes: \n" unmatched cont
                                      "\nemit start: \n" (take 30 orig-nodes)))))))))))
 
-(defn emit-production [symbol rules opts]
+(defn emit-production
+  "Emit EBNF string for one production"
+  [symbol rules opts]
   (let [pname (subs (second symbol) 1) ;; TODO:
         plen (count pname)
         rule-delim (str "\n" (apply str (repeat plen " ")) " |   ")]
@@ -396,7 +420,9 @@
                                (stringify-nodes metadata true)
                                " *)"))))))))
 
-(defn parse-latex [parser math-text verbose?]
+(defn parse-latex
+  "Parse latex into abstract syntax tree (AST)"
+  [parser math-text verbose?]
   (try
     (let [ast (.parse parser math-text)
           parsed-ast (js->clj ast :keywordize-keys true)]
@@ -408,7 +434,13 @@
        :error (.-message e)
        :text math-text})))
 
-(defn prune-latex [ast]
+(defn prune-latex
+  "Does the following:
+  - Remove AST header
+  - Convert AST maps into [type content] nodes (removes position)
+  - Remove \\phantom wrapper tags (hoist content)
+  - Remove 'environment' tags (hoist content)"
+  [ast]
   (let [;; Flatten and only keep type/content (drop position)
         ast (walk/postwalk
               #(if (map? %) [(:type %) (:content %)] %)
@@ -437,19 +469,26 @@
 ;; File and section handling
 ;;
 
-(defn clean-math-text [text]
+(defn clean-math-text
+  "Remove whitespace/indentation"
+  [text]
   (-> text
       (S/replace #"^\s+" "")  ; Remove leading whitespace
       (S/replace #"\n\s+" "\n")  ; Normalize indentation
       (S/trim)))
 
-(defn extract-math-blocks [content]
+(defn extract-math-blocks
+  "Parse and return latex math sections from an RST document"
+  [content]
   (let [math-pattern #"(?s)\.\. math::\s*\n\s*(.+?)(?=\n\n|$)"]
     (->> (re-seq math-pattern content)
          (map second)
          (map clean-math-text))))
 
-(defn load-files [files {:as opts :keys [verbose? debug?]}]
+(defn load-files
+  "Load RST spec files, parse latex from math sections, split the
+  production nodes into rules."
+  [files {:as opts :keys [verbose? debug?]}]
   (let [ast-parser (-> (unified.)
                        (.use unifiedLatexFromStringMinimal #js {:mode "math"}))]
     (for [file files
@@ -470,8 +509,9 @@
        :name (emit-nodes [name-node] (assoc opts :raw? true))
        :ast ast})))
 
-
-(defn -main [& files]
+(defn -main
+  "Load the spec RST files, parse them, and emit EBNF grammars."
+  [& files]
   (let [opts {:verbose? false
               :debug? false
               :auto-whitespace? true
@@ -509,5 +549,4 @@
             (println ebnf)))))))
 
 (apply -main *command-line-args*)
-
 
