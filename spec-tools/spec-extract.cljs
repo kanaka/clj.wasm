@@ -72,8 +72,11 @@
     :else nil))
 
 
-(defn right-arrow? [[[t c] & xs]]
-  (and (= t "macro") (= c "Rightarrow")))
+(defn right-arrow? [[n1 n2 & xs]]
+  (cond
+    (= n1 ["macro" "Rightarrow"])                1
+    (= [n1 n2] [["string" "("] ["macro" "iff"]]) 2
+    :else 0))
 
 (defn newline? [[[t c] & xs]]
   (and (= t "macro") (= c "\\")))
@@ -207,7 +210,7 @@
             (recur result (drop 3 nodes))
 
             ;; 4 ["string" "I"] ["string" "'"] ["group" [["string" ":"]]]
-            (= ["string" "y^"] ["macro" "ast"] ["group" [["string" ":"]]] n1)
+            (= [["string" "I"] ["string" "'"] ["group" [["string" ":"]]]] [n1 n2 n3])
             (recur result (drop 3 nodes))
 
             ;; 333 ["string" "."] ["group" [["string" ":"]]]
@@ -299,10 +302,20 @@
             (recur (str result "( ") (drop 1 nodes))
 
             (= ["string" ")"] n1)
-            (recur (str result ") ") (drop 1 nodes))
+            (recur (str result " )") (drop 1 nodes))
 
             (= ["macro" "epsilon"] n1)
             (recur (str result "'' ") (drop 1 nodes))
+
+            ;; ["macro" "unicode"] ["group" [["string" "00"]]]
+            (and (= ["macro" "unicode"] n1)
+                 (= "group" t2) (= "string" (-> c2 first first)))
+            (recur (str result "\"\\u" (-> c2 first second (.padStart 4 "0")) "\"")
+                   (drop 2 nodes))
+
+            ;; ["macro" "T"] ["group" [["string" "eof"]]]
+            (= [["macro" "T"] ["group" [["string" "eof"]]]] [n1 n2])
+            (recur (str result "EOF") (drop 2 nodes))
 
 
             ;; Handle raw?
@@ -367,7 +380,7 @@
             (let [unmatched (take 10 nodes)
                   cont (if (> (count nodes) 10) "..." "")]
               (throw (js/Error. (str "unmatched nodes: \n" unmatched cont
-                                     "\nnode start: \n" (take 10 orig-nodes)))))))))))
+                                     "\nemit start: \n" (take 30 orig-nodes)))))))))))
 
 (defn emit-production [symbol rules opts]
   (let [pname (subs (second symbol) 1) ;; TODO:
@@ -377,9 +390,11 @@
          (S/join rule-delim
                  (for [{:keys [rule metadata]} rules]
                    (str (emit-nodes rule (assoc opts :meta? false))
-                        "(* => "
-                        (stringify-nodes metadata true)
-                        " *)"))))))
+                        (when (and (:show-comments? opts)
+                                   (:show-meta-comments? opts))
+                          (str "(* => "
+                               (stringify-nodes metadata true)
+                               " *)"))))))))
 
 (defn parse-latex [parser math-text verbose?]
   (try
@@ -419,7 +434,7 @@
     ast))
 
 ;;
-;;
+;; File and section handling
 ;;
 
 (defn clean-math-text [text]
@@ -457,28 +472,28 @@
 
 
 (defn -main [& files]
-  (let [bubble-errors? false
-        opts {:auto-whitespace? true :verbose? false :debug? false}
+  (let [opts {:verbose? false
+              :debug? false
+              :auto-whitespace? true
+              :show-comments? true
+              :show-meta-comments? false
+              }
         raw-productions (load-files files opts)
         all-productions (reduce
                           (fn [ps {:keys [file block name ast] :as p}]
-                            (try
-                              (let [{:keys [symbol rules]} (parse-production ast)
-                                    sname (emit-nodes [symbol] (assoc opts :meta? true))
-                                    ebnf (emit-production symbol rules opts)]
-                                (conj ps (merge p {:symbol sname
-                                                   :ast ast
-                                                   :ebnf ebnf})))
-                              (catch :default e
-                                (if bubble-errors?
-                                  (throw e)
-                                  (conj ps (merge p {:error e}))))))
+                            (let [{:keys [symbol rules]} (parse-production ast)
+                                  sname (emit-nodes [symbol] (assoc opts :meta? true))
+                                  ebnf (emit-production symbol rules opts)]
+                              (conj ps (merge p {:symbol sname
+                                                 :ast ast
+                                                 :ebnf ebnf}))))
                           [] raw-productions)
         file-productions (group-by :file all-productions)]
     ;; TODO: merge repeated production names
     (println "\nEBNF Productions:")
     (doseq [[file productions] file-productions]
-      (println (str "\n(* file: " file " *)\n"))
+      (when (:show-comments? opts)
+        (println (str "\n(* file: " file " *)\n")))
       (doseq [{:keys [block error name symbol ast ebnf]} productions]
         (if error
           (do
@@ -489,7 +504,8 @@
             (println (.-message error))
             (throw error))
           (do
-            (println (str "(* production '" name "' (symbol: '" symbol "') *)"))
+            (when (:show-comments? opts)
+              (println (str "(* production '" name "' (symbol: '" symbol "') *)")))
             (println ebnf)))))))
 
 (apply -main *command-line-args*)
