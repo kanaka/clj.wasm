@@ -5,7 +5,42 @@
                                                               unifiedLatexFromStringMinimal]]
             [clojure.string :as S]
             [clojure.walk :as walk]
-            [clojure.pprint :refer [pprint]]))
+            [clojure.pprint :refer [pprint]]
+            ["neodoc" :as neodoc]))
+
+(def usage "
+spec-extract: Extract EBNF grammars from WebAssembly RST spec files.
+
+Usage:
+  spec-extract [options] <files>...
+
+General Options:
+  -v, --verbose                     Show verbose output
+                                    [env: VERBOSE]
+  --debug                           Show debug output
+  --no-auto-whitespace              Do add explicit whitespace matching to EBNF
+  --comments                        Add location comments to EBNF
+  --meta-comments                   Add metadata/right side comments to EBNF
+")
+
+;;
+;; Argument processing
+;;
+(defn clean-opts [arg-map]
+  (reduce (fn [o [a v]]
+            (let [k (keyword (S/replace a #"^[-<]*([^>]*)[>]*$" "$1"))]
+              (assoc o k (or (get o k) v))))
+          {} arg-map))
+
+(defn parse-opts [usage argv & [opts]]
+  (-> usage
+      (neodoc/run (clj->js (merge {:optionsFirst true
+                                   :smartOptions true
+                                   :argv (or argv [])}
+                                  opts)))
+      js->clj
+      clean-opts))
+
 
 ;;
 ;; parser
@@ -178,8 +213,8 @@
 (defn emit-nodes
   "Take a sequence of parsed/pruned production rule nodes and emit the
   EBNF string equivalent"
-  [orig-nodes {:keys [auto-whitespace? raw?] :as opts}]
-  (let [ws (if auto-whitespace? " " " ' '* ")]
+  [orig-nodes {:keys [no-auto-whitespace] :as opts}]
+  (let [ws (if no-auto-whitespace " ' '* " " ")]
     (loop [result ""
            nodes orig-nodes]
       (if (empty? nodes)
@@ -339,14 +374,6 @@
             (recur (str result "EOF") (drop 2 nodes))
 
 
-            ;; Handle raw?
-            (and raw? (= "group" t1))
-            (recur (str result (emit-nodes c1 opts)) (drop 1 nodes))
-
-            (and raw? (= "string" t1))
-            (recur (str result c1) (drop 1 nodes))
-
-
             ;; terminals
             (and (= "macro" t1) (re-seq #"T[uif]" c1)
                  (= "string" t2) (re-seq #"^[0-9][0-9]*$" c2))
@@ -365,7 +392,7 @@
             (recur (str result " ") (drop 1 nodes))
 
             (= "whitespace" t1)
-            (recur (str result (if raw? " " ws)) (drop 1 nodes))
+            (recur (str result ws) (drop 1 nodes))
 
             (and (= ["string" "~"] n1)
                  (= ["string" "~"] n2))
@@ -410,16 +437,15 @@
     (str symbol " ::= "
          (S/join rule-delim
                  (for [{:keys [rule metadata]} rules]
-                   (str (emit-nodes rule (assoc opts :meta? false))
-                        (when (and (:show-comments? opts)
-                                   (:show-meta-comments? opts))
+                   (str (emit-nodes rule opts)
+                        (when (:meta-comments opts)
                           (str "(* => "
                                (stringify-nodes metadata true)
                                " *)"))))))))
 
 (defn parse-latex
   "Parse latex into abstract syntax tree (AST)"
-  [parser math-text verbose?]
+  [parser math-text]
   (try
     (let [ast (.parse parser math-text)
           parsed-ast (js->clj ast :keywordize-keys true)]
@@ -485,15 +511,15 @@
 (defn parse-files
   "Load RST spec files, parse latex from math sections, split the
   production nodes into rules."
-  [files {:as opts :keys [verbose? debug?]}]
+  [files {:as opts :keys [verbose debug]}]
   (let [ast-parser (-> (unified.)
                        (.use unifiedLatexFromStringMinimal #js {:mode "math"}))]
     (for [file files
-          :let [_ (when (or verbose? debug?)
+          :let [_ (when (or verbose debug)
                     (println "Processing:" file))
                 content (fs/readFileSync file "utf-8")]
           block (extract-math-blocks content)
-          :let [_ (when debug?
+          :let [_ (when debug
                     (println "== Raw Math Block ==")
                     (println block))]
           :let [full-ast (parse-latex ast-parser block)
@@ -504,20 +530,15 @@
           :let [{:keys [symbol rules]} (parse-production ast)]]
       {:file file
        :block block
-       :name (emit-nodes [name-node] (assoc opts :raw? true))
-       :symbol (emit-nodes [symbol] (assoc opts :meta? true))
+       :name (stringify-nodes [name-node] true)
+       :symbol (stringify-nodes [symbol] true)
        :ast ast
        :rules rules})))
 
 (defn -main
   "Load the spec RST files, parse them, and emit EBNF grammars."
-  [& files]
-  (let [opts {:verbose? false
-              :debug? false
-              :auto-whitespace? true
-              :show-comments? true
-              :show-meta-comments? false
-              }
+  [& args]
+  (let [{:as opts :keys [files]} (parse-opts usage args)
         raw-productions (parse-files files opts)
         all-productions (for [p raw-productions]
                           (assoc p :ebnf (emit-production p opts)))
@@ -525,7 +546,7 @@
     ;; TODO: merge repeated production names
     (println "\nEBNF Productions:")
     (doseq [[file productions] file-productions]
-      (when (:show-comments? opts)
+      (when (:comments opts)
         (println (str "\n(* file: " file " *)\n")))
       (doseq [{:keys [block error name symbol ast ebnf]} productions]
         (if error
@@ -537,7 +558,7 @@
             (println (.-message error))
             (throw error))
           (do
-            (when (:show-comments? opts)
+            (when (:comments opts)
               (println (str "(* production '" name "' (symbol: '" symbol "') *)")))
             (println ebnf)))))))
 
