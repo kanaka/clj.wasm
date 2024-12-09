@@ -18,7 +18,7 @@ General Options:
   -v, --verbose                     Show verbose output
                                     [env: VERBOSE]
   --debug                           Show debug output
-  --no-auto-whitespace              Do add explicit whitespace matching to EBNF
+  --omit-whitespace                 Do add explicit whitespace matching to EBNF
   --comments                        Add location comments to EBNF
   --meta-comments                   Add metadata/right side comments to EBNF
 ")
@@ -41,10 +41,14 @@ General Options:
       js->clj
       clean-opts))
 
+;;
+;; general utilities
+;;
+(def Eprn     #(binding [*print-fn* *print-err-fn*] (apply prn %&)))
+(def Eprintln #(binding [*print-fn* *print-err-fn*] (apply println %&)))
+(def Epprint  #(binding [*print-fn* *print-err-fn*] (pprint %)))
+(defn fatal [& msg] (apply Eprintln msg) (js/process.exit 1))
 
-;;
-;; parser
-;;
 
 (defn split-match-n
   "Takes a predicate and a collection. The pred function takes
@@ -64,10 +68,15 @@ General Options:
           (let [n (if (number? n) n 1)]
             [(seq before) (seq (take n xs)) (seq (drop n xs))]))))))
 
-(defn find-match-n
+(defn find-match
   "Like split-match-n but returns true or false instead of a count"
   [pred coll]
   (boolean (second (split-match-n pred coll))))
+
+
+;;
+;; parser
+;;
 
 (defn strs=
   "Match a sequence of string nodes to strings in strs"
@@ -100,12 +109,10 @@ General Options:
     (strs= xs ":" ":" "=")         3
     :else nil))
 
-;; "&&\|&", "\|&", "~~|~~", "~|~"
+;; "&&\|&", "\|&"
 (defn production-alt? [xs]
   (cond
-    (strs= xs "~" "~" "|" "~" "~") 5
     (strs= xs "&" "&" "|" "&")     4
-    (strs= xs "~" "|" "~")         3
     (strs= xs "|" "&")             2
     :else nil))
 
@@ -204,6 +211,8 @@ General Options:
                                 "ast"        "*"
                                 "\\"         " "
                                 "backslash" "\\"
+                                "$"         "$"
+                                "dots"      ""
                                 "_"          "_" ;; DANGER: not universal
                                 (if raw? c1 (str "UNKNOWN_MACRO<" c1 ">"))))
                (str "UNKNOWN_TYPE<" t1 ">")))]
@@ -213,8 +222,9 @@ General Options:
 (defn emit-nodes
   "Take a sequence of parsed/pruned production rule nodes and emit the
   EBNF string equivalent"
-  [orig-nodes {:keys [no-auto-whitespace] :as opts}]
-  (let [ws (if no-auto-whitespace " ' '* " " ")]
+  [orig-nodes {:keys [omit-whitespace] :as opts}]
+  (let [ws+ (if omit-whitespace " " " ' '+ ")
+        ws* (if omit-whitespace " " " ' '* ")]
     (loop [result ""
            nodes orig-nodes]
       (if (empty? nodes)
@@ -360,6 +370,14 @@ General Options:
             (= ["string" ")"] n1)
             (recur (str result " )") (drop 1 nodes))
 
+
+            ;; "~~|~~", "~|~"
+            (strs= [n1 n2 n3 n4 n5] "~" "~" "|" "~" "~")
+            (recur (str result " | ") (drop 5 nodes))
+
+            (strs= [n1 n2 n3] "~" "|" "~")
+            (recur (str result " | ") (drop 3 nodes))
+
             (= ["macro" "epsilon"] n1)
             (recur (str result "'' ") (drop 1 nodes))
 
@@ -392,14 +410,14 @@ General Options:
             (recur (str result " ") (drop 1 nodes))
 
             (= "whitespace" t1)
-            (recur (str result ws) (drop 1 nodes))
+            (recur (str result " ") (drop 1 nodes))
 
             (and (= ["string" "~"] n1)
                  (= ["string" "~"] n2))
-            (recur (str result ws) (drop 2 nodes))
+            (recur (str result ws+) (drop 2 nodes))
 
             (= ["string" "~"] n1)
-            (recur (str result ws) (drop 1 nodes))
+            (recur (str result ws*) (drop 1 nodes))
 
             (= ["macro" "quad"] n1)
             (recur (str result " ") (drop 1 nodes))
@@ -413,7 +431,7 @@ General Options:
 
             ;; misc
             (= ["macro" "dots"] n1)
-            (recur (str result " <DOTS> ") (drop 1 nodes))
+            (recur (str result " ") (drop 1 nodes))
 
             ;; ["string" "["] ["string" "-"] ["string" "2ex"] ["string" "]"]
             (and (= ["string" "["] n1)
@@ -431,17 +449,24 @@ General Options:
 
 (defn emit-production
   "Emit EBNF string for one production"
-  [{:keys [symbol rules]} opts]
+  [{:keys [symbol files rules]} opts]
   (let [plen (count symbol)
         rule-delim (str "\n" (apply str (repeat plen " ")) " |   ")]
     (str symbol " ::= "
          (S/join rule-delim
-                 (for [{:keys [rule metadata]} rules]
-                   (str (emit-nodes rule opts)
-                        (when (:meta-comments opts)
-                          (str "(* => "
-                               (stringify-nodes metadata true)
-                               " *)"))))))))
+                 (for [{:keys [rule metadata file]} rules
+                       :let [ebnf (emit-nodes rule opts)]
+                       :when (not (re-seq #"^ *$" (stringify-nodes rule)))
+                       :let [ebnf (if (and (:comments opts)
+                                           (> (count files) 1))
+                                    (str ebnf " (* file: " file " *)")
+                                    ebnf)
+                             ebnf (if (:meta-comments opts)
+                                    (str ebnf " (* => "
+                                         (stringify-nodes metadata true)
+                                         " *)")
+                                    ebnf)]]
+                   ebnf)))))
 
 (defn parse-latex
   "Parse latex into abstract syntax tree (AST)"
@@ -516,51 +541,86 @@ General Options:
                        (.use unifiedLatexFromStringMinimal #js {:mode "math"}))]
     (for [file files
           :let [_ (when (or verbose debug)
-                    (println "Processing:" file))
+                    (Eprintln "Processing:" file))
                 content (fs/readFileSync file "utf-8")]
           block (extract-math-blocks content)
           :let [_ (when debug
-                    (println "== Raw Math Block ==")
-                    (println block))]
+                    (Eprintln "== Raw Math Block ==")
+                    (Eprintln block))]
           :let [full-ast (parse-latex ast-parser block)
                 ast (prune-latex (get-in full-ast [:ast :content 0 :content]))]
-          :when (and (find-match-n production-name? ast)
-                     (not (find-match-n equiv? ast)))
+          :when (and (find-match production-name? ast)
+                     (not (find-match equiv? ast)))
           [name-node ast] (split-productions ast)
-          :let [{:keys [symbol rules]} (parse-production ast)]]
-      {:file file
+          :let [{:keys [symbol rules]} (parse-production ast)
+                rules (for [rule rules] (assoc rule :file file))]]
+      {:files #{file}
        :block block
+       :ast ast
        :name (stringify-nodes [name-node] true)
        :symbol (stringify-nodes [symbol] true)
-       :ast ast
        :rules rules})))
+
+(defn merge-production-rules
+  "Combine production rules that are defined incrementally in the same
+  file or across multiple files.
+  Returns (a map):
+  {symbol production, ...}"
+  [productions]
+  (reduce (fn [ps {:as p :keys [files symbol rules]}]
+            (if (get-in ps [symbol])
+              (-> ps
+                  (update-in [symbol :rules] concat rules)
+                  (update-in [symbol :files] into files))
+              (assoc-in ps [symbol] p)))
+          {} productions))
+
+(def PRODUCTION-OVERRIDES
+  {"char"     "char ::= #\"^[^\\x00-\\x1F\\x7F-\\x9F]$\""
+   "digit"    "digit ::= #\"^[0-9]$\""
+   "hexdigit" "hexdigit ::= digit\n          | #\"^[A-Fa-f]$\""
+   "keyword"  "keyword ::= ( #\"^[a-z]$\" ) idchar*"
+   "idchar"   "idchar ::= #\"^[0-9A-Za-z!#$%&'*+\\-./:<=>?@\\\\^_`|~]$\""})
+
+(defn add-production-ebnfs
+  [productions opts]
+  (into {} (for [[symbol prod] productions]
+             (let [prod (if-let [e (get PRODUCTION-OVERRIDES symbol)]
+                          (merge prod {:ebnf e
+                                       :files #{"<OVERRIDE>"}})
+                          (merge prod {:ebnf (emit-production prod opts)}))]
+               [symbol prod]))))
+
+
 
 (defn -main
   "Load the spec RST files, parse them, and emit EBNF grammars."
   [& args]
   (let [{:as opts :keys [files]} (parse-opts usage args)
+        _ (when (empty? files)
+            (fatal "At least one file required"))
+        _ (when (some #{"-h" "--help"} files)
+            (fatal usage))
         raw-productions (parse-files files opts)
-        all-productions (for [p raw-productions]
-                          (assoc p :ebnf (emit-production p opts)))
-        file-productions (group-by :file all-productions)]
+        file-sym-productions (merge-production-rules raw-productions)
+        ebnf-productions (add-production-ebnfs file-sym-productions opts)]
     ;; TODO: merge repeated production names
-    (println "\nEBNF Productions:")
-    (doseq [[file productions] file-productions]
-      (when (:comments opts)
-        (println (str "\n(* file: " file " *)\n")))
-      (doseq [{:keys [block error name symbol ast ebnf]} productions]
-        (if error
-          (do
-            (println "\n\n===== Error =====")
-            (println "== Location ==")
-            (println (str "file: " file ", production name: " name))
-            (println "== Error Message ==")
-            (println (.-message error))
-            (throw error))
-          (do
-            (when (:comments opts)
-              (println (str "(* production '" name "' (symbol: '" symbol "') *)")))
-            (println ebnf)))))))
+    (Eprintln "\nEBNF Productions:")
+    (doseq [[symbol {:keys [files error name ebnf]}] ebnf-productions]
+      (if (not error)
+        (do
+          (when (:comments opts)
+            (println (str "(* " name " ("
+                          "files: '" (S/join "', '" files) "'"
+                          ") *)")))
+          (println ebnf))
+        (do
+          (Eprintln "\n\n===== Error =====")
+          (Eprintln "== Location ==")
+          (Eprintln (str "file: " (S/join "," files) ", production name: " name))
+          (Eprintln "== Error Message ==")
+          (Eprintln (.-message error))
+          (throw error))))))
 
 (apply -main *command-line-args*)
 
