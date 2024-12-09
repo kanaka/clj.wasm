@@ -11,8 +11,12 @@ order.
 
 * Explore new WebAssembly Features (GC, ref types, bulk mem, etc)
   * Create babashka program to extract ENBF from wasm spec
+    * Partially completed [here](spec-tools/spec-extract.cljs)
+      * Unfortunately, the spec document is more rendering centric
+        than I hoped so extracting an EBNF grammar reliably is
+        difficult.
   * Update [wam](https://github.com/kanaka/wam)
-    * Convert from JS to Clojure/babashka
+    * Convert from JS to Clojure/babashka (maybe waet-based?)
     * Use extracted spec EBNF
   * Create wasmgc mal implementation using wam
 
@@ -21,9 +25,10 @@ order.
 * Port Clojure's immutable data structures to WasmGC
   * [Clojure](https://github.com/clojure/clojure/blob/master/src/jvm/clojure/lang/) (files `Persistent*.java`)
   * [ClojureScript](https://github.com/clojure/clojurescript/blob/master/src/main/cljs/cljs/core.cljs) (search for `;;; Persistent`)
+  * Benchmarks comparison (CPU and mem)
 
 * Integrate with WebAssembly Components / WIT system
 
-* Implement recompile/relink (eval / JIR)
+* Implement dynamic recompile/relink (eval / JIR)
 
 * Self-hosted / bootstrapped
