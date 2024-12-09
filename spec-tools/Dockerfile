@@ -22,6 +22,10 @@ RUN apt-get -y install direnv
 # TODO: move up with nodejs
 RUN apt-get -y install npm
 
+RUN cd /opt && \
+    curl -L https://github.com/WebAssembly/wabt/releases/download/1.0.36/wabt-1.0.36-ubuntu-20.04.tar.gz | tar xvzf -
+ENV PATH=$PATH:/opt/wabt-1.0.36/bin
+
 FROM tools AS user
 
 ARG USER_ID=1000
